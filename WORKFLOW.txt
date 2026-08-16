@@ -1,0 +1,328 @@
+================================================================================
+BUILDINGCARE — COMPLETE WEBSITE WORKFLOW & DOCUMENTATION
+================================================================================
+Last updated: 2026-08-04
+
+This file explains, in plain language, what this website is, who uses it, every
+screen it has, and exactly how each workflow moves from one step to the next.
+Read it top to bottom to understand the whole product.
+
+--------------------------------------------------------------------------------
+1. WHAT THIS WEBSITE IS
+--------------------------------------------------------------------------------
+BuildingCare is a building / apartment management web app (installable as a PWA
+on mobile). It connects the people who run a building (Hosts) with the people
+who live in it (Residents).
+
+It handles:
+  - Building registration and profiles (with photo)
+  - Rooms and room assignment
+  - Host management (Primary Host / Host)
+  - Maintenance charges (water, cleaning, security, etc.)
+  - Automatic monthly billing generated from those charges
+  - Payment requests with QR code, and host verification of payments
+  - Notifications (bell icon with live unread badge)
+  - One-to-one chat between each resident and the building's hosts
+  - Starred (favourite) buildings on the dashboard
+  - Search for a building by name or code
+  - User profile (name, mobile, role, date of birth)
+
+--------------------------------------------------------------------------------
+2. WHO USES IT (ROLES)
+--------------------------------------------------------------------------------
+VISITOR      - Signed in, but has no relation to a building. Can search and star
+               buildings and send a join request. Read-only otherwise.
+RESIDENT     - Assigned to a room in a building. Sees own bills, pays, chats with
+               hosts, receives notifications.
+HOST         - Manages a building: rooms, residents, maintenance charges, monthly
+               billing, payment verification, chat with every resident.
+PRIMARY HOST - The host who registered the building. Same powers as Host, plus
+               is the owner of record. Shown with a gold badge.
+
+Badge colours used across the app:
+  Green = Active      Red = Inactive      Blue = Host      Gold = Primary Host
+Bill/payment colours:
+  Red = Not Paid      Yellow = Pending verification      Blue/Green = Verified
+
+--------------------------------------------------------------------------------
+3. TECHNOLOGY (SHORT VERSION)
+--------------------------------------------------------------------------------
+  Frontend  : React 19 + TanStack Start (file-based routing) + Vite
+  Styling   : Tailwind CSS v4 + shadcn/ui components
+  Data      : TanStack Query (caching, refetching, live updates)
+  Backend   : Lovable Cloud (managed Postgres database, auth, storage, realtime)
+  Security  : Row Level Security (RLS) on every table + authenticated server
+              functions for privileged actions
+  Live data : Realtime subscriptions on bills, charges, notifications and chat
+
+Key folders:
+  src/routes/                 every page (file name = URL)
+  src/routes/_authenticated/  pages that require sign-in (auto redirect to /auth)
+  src/components/             dialogs and shared UI (Chat, Maintenance, Billing…)
+  src/lib/                    server functions + helpers (billing, notifications)
+  src/hooks/                  auth hook, host guard, mobile detection
+  supabase/                   database configuration and migrations
+
+--------------------------------------------------------------------------------
+4. SITE MAP (EVERY PAGE)
+--------------------------------------------------------------------------------
+  /                              Landing page
+  /auth                          Sign in / Register (3 tabs)
+  /reset-password                Set a new password from the emailed link
+  /dashboard                     Your starred buildings + role badges + stats
+  /search                        Find a building by name or code (debounced)
+  /profile                       Your details + "Register Building" action
+  /register-building             Create a new building (you become Primary Host)
+  /building/:id                  Building overview — the main hub
+  /building/:id/rooms            Manage Rooms (hosts)
+  /building/:id/hosts            Manage Hosts (hosts)
+  /building/:id/maintenance      Manage Maintenance charges (hosts)
+  /building/:id/notifications    Full notification list
+  /building/:id/chat             Full chat screen
+
+Several of these also open as pop-up dialogs from the building overview so you
+never lose your place: Manage Maintenance, Monthly Billing, Residents,
+Notifications, Chat, My Bills.
+
+--------------------------------------------------------------------------------
+5. WORKFLOW A — SIGN UP AND SIGN IN
+--------------------------------------------------------------------------------
+The /auth page has three tabs:
+
+  1) Sign In        - email + password. "Forgot password?" sends a reset email,
+                      which opens /reset-password to choose a new password.
+  2) Register       - choose "Register as": Living Person or Host.
+                      Fields: name, email, password, mobile, date of birth.
+                      AGE RULE: date of birth must make you 18 or older,
+                      otherwise the account is refused.
+  3) Phone          - enter mobile with country code -> receive a 6-digit SMS
+                      code -> enter code -> signed in. If SMS sending is not
+                      enabled on the backend plan, a clear message says so.
+
+  Plus: "Continue with Google" one-click sign-in.
+
+What happens behind the scenes on first sign-up:
+  A database trigger creates a row in the "profiles" table for the new user,
+  copying name, email, mobile, role and date of birth. It works even when there
+  is no email (phone-only sign-up) or no mobile (Google sign-up).
+
+Signing out clears all cached data so pressing Back cannot show private pages.
+
+Protected pages: anything under /dashboard, /profile, /building/... checks the
+session first and redirects to /auth if you are not signed in.
+
+--------------------------------------------------------------------------------
+6. WORKFLOW B — REGISTERING A BUILDING (HOST)
+--------------------------------------------------------------------------------
+  Profile page -> "My Account Actions" -> Register Building
+  -> enter building name, address, details, and upload a building photo
+  -> Save
+
+Result:
+  - A building row is created and given a unique building code.
+  - You are recorded as the PRIMARY HOST (gold badge).
+  - The photo is stored in private storage; the app shows it through a signed
+    URL so only signed-in users can load it.
+  - The building is automatically starred so it appears on your dashboard.
+
+Hosts can later use "Edit Building" to change the name, details or photo.
+
+--------------------------------------------------------------------------------
+7. WORKFLOW C — A RESIDENT JOINS A BUILDING
+--------------------------------------------------------------------------------
+  1. Resident opens /search and searches by building name or code.
+  2. Resident stars the building (it now shows on their dashboard).
+  3. Resident opens the building and sends a JOIN / ROOM REQUEST.
+  4. Every host of that building gets a NOTIFICATION (bell badge turns red).
+  5. A host opens Notifications (or the Residents dialog) and Approves or
+     Rejects the request.
+  6. On approval:
+        - the resident is linked to a room in the "room_users" table with
+          status = active
+        - the resident appears in Manage Rooms and in the Residents dialog
+        - the resident receives a confirmation notification
+        - chat with hosts unlocks for that resident
+        - the resident starts receiving that building's monthly bills
+  7. A host can later REMOVE a resident: their status becomes inactive, they
+     lose access, and they are notified.
+
+Guard rule: a user cannot be an active resident of two buildings at once.
+
+--------------------------------------------------------------------------------
+8. WORKFLOW D — ROOMS AND HOSTS
+--------------------------------------------------------------------------------
+MANAGE ROOMS (hosts only)
+  - Stats bar at the top: total rooms, active, inactive, assigned.
+  - Add a room (room number + details).
+  - Activate / Deactivate a room, with a confirmation dialog.
+  - Assign a user to a room by searching for them.
+  - See each room's resident contact details.
+  - Changing the number of active rooms recalculates the per-room share of each
+    maintenance charge automatically.
+  - Everything refreshes in place — no full page reload.
+
+MANAGE HOSTS (hosts only)
+  - See all hosts with Blue (Host) / Gold (Primary Host) badges.
+  - Add another host, or deactivate one.
+  - Only active hosts can perform host actions anywhere in the app.
+
+--------------------------------------------------------------------------------
+9. WORKFLOW E — MAINTENANCE CHARGES
+--------------------------------------------------------------------------------
+  Building overview -> "Manage Maintenance" (opens a dialog)
+
+  A host presses "+" to add a maintenance category:
+      - type / title (e.g. Water, Cleaning, Security)
+      - total amount
+      - details / description
+      - optional payment QR code image for residents to scan
+
+  The app divides the total by the number of active rooms to get the per-room
+  amount, and immediately generates the current month's bill row for every
+  active room.
+
+  Charges can be edited or deactivated. Deactivating stops future billing.
+
+--------------------------------------------------------------------------------
+10. WORKFLOW F — MONTHLY BILLING AND PAYMENT
+--------------------------------------------------------------------------------
+HOST SIDE — "Monthly Billing" dialog
+  - Month selector at the top.
+  - The month's bills are built automatically from the ACTIVE maintenance
+    charges. A new month starts a fresh cycle by itself.
+  - Host-only "Reset This Month" button rebuilds the current month from the
+    current charges (useful after editing charges mid-month).
+  - Live counters: Pending payments, Verified payments, Unpaid rooms.
+  - Each row shows the room, the amount and the payment status. The host can
+    VERIFY or REJECT a submitted payment; the resident is notified either way.
+
+RESIDENT SIDE — "View My Bills" dialog
+  - Shows every charge for the selected month with its amount and status.
+  - Large QR code display, sized for scanning from a phone.
+  - "Pay Now" -> resident submits a payment request (optionally with a payment
+    screenshot). Status becomes PENDING (yellow) and a notification goes to the
+    hosts.
+  - When a host verifies, the status flips to PAID (blue/green) instantly —
+    the dialog listens for realtime updates, no refresh needed.
+  - If bills for the month are missing, they are generated on demand so the
+    resident always sees the correct current charges.
+
+Payment status lifecycle:
+  NOT PAID (red) -> resident pays -> PENDING (yellow) -> host verifies ->
+  PAID / VERIFIED (blue) ... or host rejects -> back to NOT PAID with a reason.
+
+--------------------------------------------------------------------------------
+11. WORKFLOW G — NOTIFICATIONS
+--------------------------------------------------------------------------------
+  - Bell button on the building overview shows a red badge with the unread
+    count, updated live.
+  - Hosts receive: join / room requests, payment verification requests.
+  - Residents receive: request approved or rejected, payment verified or
+    rejected, removal from the building.
+  - Opening the notifications view marks items as read and clears the badge.
+  - Actionable notifications (like a join request) carry Approve / Reject
+    buttons directly in the list.
+
+--------------------------------------------------------------------------------
+12. WORKFLOW H — CHAT
+--------------------------------------------------------------------------------
+  Instagram-style messaging, scoped to one building.
+
+  RESIDENT view : a single conversation with the building's hosts.
+  HOST view     : a list of all residents on the left (with last message and
+                  room number), the conversation on the right. On mobile the
+                  list and the conversation swap with a back arrow.
+
+  - Messages are stored per building and per resident, so any host can reply and
+    the resident sees one continuous thread.
+  - New messages arrive live.
+  - Names and room numbers come from a member-scoped server function, because
+    the browser is only allowed to read your own profile directly.
+  - Anyone who is neither an active host nor an assigned resident sees an
+    "no access" message instead of the chat.
+
+--------------------------------------------------------------------------------
+13. WORKFLOW I — DASHBOARD, SEARCH, PROFILE
+--------------------------------------------------------------------------------
+DASHBOARD (/dashboard)
+  - Shows ONLY your starred buildings, as cards with the building photo (or a
+    gradient when there is no photo), your role badge and quick stats.
+  - Each card links straight into that building's overview.
+
+SEARCH (/search)
+  - Debounced search by building name or building code.
+  - Star / unstar from the results; stars are saved in the database
+    (starred_buildings), so they follow you to any device.
+
+PROFILE (/profile)
+  - View and edit your name and mobile number.
+  - "My Account Actions" section contains Register Building.
+  - Users who signed up by phone or Google are prompted once to complete their
+    name and role.
+
+--------------------------------------------------------------------------------
+14. DATABASE TABLES (WHAT EACH ONE STORES)
+--------------------------------------------------------------------------------
+  profiles                 one row per user: name, email, mobile, role, DOB
+  buildings                name, address, details, code, photo_url, owner
+  hosts                    which users are hosts of which building + status
+  rooms                    room number, details, active/inactive, building
+  room_users               which user lives in which room + status (active/…)
+  join_requests            pending requests from residents to join a building
+  maintenance_categories   the charges: type, total amount, details, QR image
+  monthly_maintenance      per-month record of a charge for a building
+  room_maintenance_status  per-room, per-month bill row + payment status
+  notifications            every alert, with read/unread and action type
+  chat_messages            building_id, resident_id, sender_id, content, time
+  starred_buildings        favourites per user
+
+Security model:
+  - Row Level Security is enabled on all of these tables.
+  - Residents can only read their own rows; hosts can read their building's rows.
+  - Anything privileged (approving requests, verifying payments, reading other
+    people's names) runs through an authenticated server function rather than a
+    direct browser query.
+  - Building photos and QR images live in private storage and are served with
+    short-lived signed URLs.
+
+--------------------------------------------------------------------------------
+15. HOW LIVE DATA WORKS
+--------------------------------------------------------------------------------
+  Realtime is enabled on: room_maintenance_status, maintenance_categories,
+  notifications, chat_messages.
+
+  That means bills, payment statuses, the notification badge and chat messages
+  update on screen the moment they change on the server, on every open device,
+  without pressing refresh. Other lists use TanStack Query caching with
+  automatic refetching.
+
+--------------------------------------------------------------------------------
+16. TYPICAL END-TO-END STORY
+--------------------------------------------------------------------------------
+  1. Priya registers as a Host, creates "Sunrise Apartments" with a photo.
+  2. She adds rooms 101–110 and a second host.
+  3. She adds maintenance charges: Water 5000, Cleaning 3000, with a UPI QR.
+     The app splits them across the 10 active rooms and publishes this month's
+     bills.
+  4. Arjun registers as a Living Person, searches "Sunrise", stars it, and asks
+     for room 104.
+  5. Priya's bell badge turns red; she approves. Arjun is added to room 104.
+  6. Arjun opens "View My Bills", sees Water 500 and Cleaning 300, scans the QR,
+     pays, and taps "Pay Now". Status turns yellow.
+  7. Priya opens Monthly Billing, sees the pending payment, and verifies it.
+     Arjun's bill turns blue instantly and he gets a notification.
+  8. Arjun messages Priya in chat about a leaking tap; she replies from the
+     host chat list.
+  9. Next month, the billing cycle regenerates automatically.
+
+--------------------------------------------------------------------------------
+17. NOTES AND LIMITS
+--------------------------------------------------------------------------------
+  - Phone OTP sign-in requires an SMS sender enabled on the backend plan; if it
+    is not, the app shows a clear message instead of failing silently.
+  - Custom-domain email sending requires a domain; default auth emails work out
+    of the box.
+  - A user can be an active resident of only one building at a time.
+  - The app is installable on mobile (PWA manifest + icons) and every screen is
+    mobile responsive.
+================================================================================

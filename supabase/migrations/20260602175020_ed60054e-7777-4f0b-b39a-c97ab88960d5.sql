@@ -1,0 +1,1 @@
+GRANT EXECUTE ON FUNCTION public.is_host_of(uuid) TO authenticated, anon, service_role;
