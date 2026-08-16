@@ -6,3 +6,8 @@ node_modules
 /dist
 .vite
 .DS_Store
+
+# Build output directories — never commit these
+.output/
+.vercel/
+.wrangler/
