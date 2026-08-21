@@ -17,18 +17,10 @@ export default defineConfig({
     build: {
       // Raise the chunk size warning limit (KB) to avoid non-actionable warnings during build
       chunkSizeWarningLimit: 3000,
-      rollupOptions: {
-        output: {
-          manualChunks(id: string) {
-            if (id.includes('node_modules')) {
-              if (id.includes('recharts')) return 'vendor_recharts';
-              if (id.includes('@tanstack')) return 'vendor_tanstack';
-              if (id.includes('react') || id.includes('react-dom')) return 'vendor_react';
-              return 'vendor_misc';
-            }
-          }
-        }
-      }
+      // Keep default rollup chunking to avoid circular chunk references introduced by manualChunks.
+      // The chunk size warning limit above already reduces noisy warnings; consider upgrading heavy libs
+      // (recharts) or lazy-loading chart pages to reduce bundle sizes.
+      rollupOptions: {}
     }
   }
 });
