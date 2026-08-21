@@ -12,4 +12,23 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Additional Vite options to help with large vendor chunks and Vercel deployments
+  vite: {
+    build: {
+      // Raise the chunk size warning limit (KB) to avoid non-actionable warnings during build
+      chunkSizeWarningLimit: 3000,
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (id.includes('node_modules')) {
+              if (id.includes('recharts')) return 'vendor_recharts';
+              if (id.includes('@tanstack')) return 'vendor_tanstack';
+              if (id.includes('react') || id.includes('react-dom')) return 'vendor_react';
+              return 'vendor_misc';
+            }
+          }
+        }
+      }
+    }
+  }
 });
