@@ -1,7 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { ArrowLeft, Search as SearchIcon, Loader2, Star, MapPin } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -51,11 +50,9 @@ function SearchPage() {
     }
 
     const code = normalizeBuildingCode(q);
-    const { data, error } = await supabase
-      .from("buildings")
-      .select("id,name,location,unique_code,photo_url")
-      .eq("unique_code", code)
-      .limit(1);
+    const { data, error } = await supabase.rpc("lookup_building_by_code", {
+      search_code: code,
+    });
 
     setSearching(false);
     if (error) return toast.error("Search failed. Please try again.");
@@ -119,7 +116,13 @@ function SearchPage() {
               <Card
                 key={b.id}
                 className="cursor-pointer overflow-hidden p-0 transition hover:border-primary hover:shadow-sm"
-                onClick={() => navigate({ to: "/building/$id", params: { id: b.id } })}
+                onClick={() =>
+                  navigate({
+                    to: "/building/$id",
+                    params: { id: b.id },
+                    search: { code: b.unique_code },
+                  })
+                }
               >
                 <div className="relative h-40 w-full">
                   <BuildingPhoto path={b.photo_url} alt={b.name} iconClassName="h-10 w-10" />

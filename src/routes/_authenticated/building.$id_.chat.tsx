@@ -72,14 +72,20 @@ function ChatPage() {
         await loadHostThreads();
       } else {
         // resident?
-        const { data: ru } = await supabase
+        const { data: roomUsers } = await supabase
           .from("room_users")
-          .select("room_id, rooms!inner(building_id)")
+          .select("room_id")
           .eq("user_id", uid)
           .eq("status", "active");
-        const isResident = (ru || []).some(
-          (r: any) => r.rooms?.building_id === id,
-        );
+        const roomIds = (roomUsers ?? []).map((roomUser) => roomUser.room_id);
+        let isResident = false;
+        if (roomIds.length) {
+          const { data: residentRooms } = await supabase
+            .from("rooms")
+            .select("building_id")
+            .in("id", roomIds);
+          isResident = !!residentRooms?.some((room) => room.building_id === id);
+        }
         if (isResident) {
           setRole("resident");
           setActiveResident(uid);

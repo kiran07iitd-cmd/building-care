@@ -48,7 +48,11 @@ type VerifyTarget = {
 function NotificationsPage() {
   const { id } = useParams({ strict: false });
   if (!id) return null;
-  
+
+  return <NotificationsContent id={id} />;
+}
+
+function NotificationsContent({ id }: { id: string }) {
   const [loading, setLoading] = useState(true);
   const [buildingName, setBuildingName] = useState("");
   const [isHost, setIsHost] = useState(false);
@@ -62,6 +66,10 @@ function NotificationsPage() {
     setLoading(true);
     const { data: u } = await supabase.auth.getUser();
     const uid = u.user?.id;
+    if (!uid) {
+      setLoading(false);
+      return;
+    }
     const [{ data: b }, { data: hosts }, { data: ns }] = await Promise.all([
       supabase.from("buildings").select("name").eq("id", id).maybeSingle(),
       supabase.from("hosts").select("user_id,status").eq("building_id", id),
@@ -96,7 +104,7 @@ function NotificationsPage() {
       .from("notifications")
       .update({ is_read: true })
       .eq("building_id", id)
-      .eq("receiver_id", u.user?.id!)
+      .eq("receiver_id", u.user?.id ?? "")
       .eq("is_read", false);
     setNotifs((cur) => cur.map((x) => ({ ...x, is_read: true })));
     toast.success("All marked as read");
@@ -144,11 +152,16 @@ function NotificationsPage() {
     if (!verify) return;
     setBusy(true);
     const { data: u } = await supabase.auth.getUser();
+    const userId = u.user?.id;
+    if (!userId) {
+      setBusy(false);
+      return;
+    }
     const { data: host } = await supabase
       .from("hosts")
       .select("id,user_id")
       .eq("building_id", id)
-      .eq("user_id", u.user?.id!)
+      .eq("user_id", userId)
       .eq("status", "active")
       .maybeSingle();
     const { error } = await supabase
@@ -156,7 +169,7 @@ function NotificationsPage() {
       .update({
         payment_status: "paid",
         verified_at: new Date().toISOString(),
-        verified_by: host?.id ?? null,
+        verified_by: host?.user_id ?? null,
       })
       .eq("id", verify.statusId);
     if (error) {

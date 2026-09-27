@@ -6,17 +6,26 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 type BuildingCodeShareCardProps = {
+  buildingId: string;
   buildingCode: string;
   className?: string;
 };
 
-export function BuildingCodeShareCard({ buildingCode, className }: BuildingCodeShareCardProps) {
+export function BuildingCodeShareCard({
+  buildingId,
+  buildingCode,
+  className,
+}: BuildingCodeShareCardProps) {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    QRCode.toDataURL(buildingCode, {
+    const buildingUrl = new URL(
+      `/building/${encodeURIComponent(buildingId)}?code=${encodeURIComponent(buildingCode)}`,
+      window.location.origin,
+    ).toString();
+    QRCode.toDataURL(buildingUrl, {
       margin: 1,
       width: 220,
       color: { dark: "#0f172a", light: "#ffffff" },
@@ -31,7 +40,7 @@ export function BuildingCodeShareCard({ buildingCode, className }: BuildingCodeS
     return () => {
       cancelled = true;
     };
-  }, [buildingCode]);
+  }, [buildingId, buildingCode]);
 
   useEffect(() => {
     if (!copied) return;

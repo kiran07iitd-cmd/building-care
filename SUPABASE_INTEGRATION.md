@@ -6,28 +6,49 @@ added host-targeted chat fields and RLS policies; to complete the integration do
 these steps (or ask a DBA/dev to run the SQL in supabase/sql_apply_for_editor.sql):
 
 1) Environment
-   - Add environment variables (dev and production):
-     VITE_SUPABASE_URL (client), VITE_SUPABASE_PUBLISHABLE_KEY (client)
-     SUPABASE_SERVICE_ROLE_KEY (server/migration)
+    - Add environment variables (dev and production):
+       `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+       for client/authenticated requests, and `SUPABASE_SECRET_KEY` for trusted
+       server-side admin operations. Existing projects may use
+       `SUPABASE_SERVICE_ROLE_KEY` instead.
    - Never commit keys to the repository.
 
-2) Apply DB migration (SQL editor)
+   For Vercel, add these in Project Settings > Environment Variables for
+   Production and Preview as appropriate. The URL and publishable key are
+   public configuration; keep `SUPABASE_SECRET_KEY` server-only.
+   Redeploy after changing environment variables. `.env.example` lists the
+   expected names without containing real credentials.
+
+2) Deploy to Vercel
+   - Import the repository and use the project root as the Root Directory.
+   - The checked-in `vercel.json` configures `npm ci`, `npm run build`, and
+     Nitro's `.vercel/output` directory. Do not override these in Project
+     Settings unless intentionally changing the build.
+   - Configure the Supabase environment variables above before deploying.
+   - Apply the required Supabase SQL migrations before testing production.
+
+3) Apply DB migration (SQL editor)
    - Open Supabase Console > SQL Editor > New query
    - Paste supabase/sql_apply_for_editor.sql and run it.
    - That SQL does:
      * Adds chat_messages.to_host_id (uuid) referencing auth.users
      * Creates chat_message_reads for per-user read tracking
-     * Enables and sets RLS policies for chat_messages (select/insert/update)
-     * Creates a helper function to search buildings by candidate codes
+   * Enables chat-message RLS with scoped member read/insert policies
+   * Removes direct client updates to chat messages
 
-3) Role-Based Building Registration Migration (SQL editor)
-   - Open Supabase Console > SQL Editor > New query
-   - Run `supabase/sql_apply_role_authorization.sql` (or `supabase/migrations/20260816124500_role_based_building_registration.sql`)
-   - That SQL restricts building creation (`INSERT` on `public.buildings`) strictly to authenticated users with `user_metadata.role = 'host'`.
+4) Apply security hardening migrations (SQL editor)
+   - Run these migrations in timestamp order after the base schema and chat SQL:
+     `supabase/migrations/20260927090000_fix_image_limits_and_rls_warnings.sql`
+     `supabase/migrations/20260927140000_revoke_self_host_insert.sql`
+     `supabase/migrations/20260927150000_harden_profile_billing_and_qr_access.sql`
+     `supabase/migrations/20260927160000_scope_building_reads_and_code_lookup.sql`
+   - They remove self-assigned host access; restrict profile, building, host-request, and chat writes; scope building/room reads to members; make maintenance QR files private; and rate-limit exact building-code lookups.
+   - Host/resident mode is user-selectable UI state, not an authorization role. The server derives the caller from the verified Supabase access token.
+   - If a legacy `sql_complete_setup.sql` or `sql_full_setup*.sql` is used to bootstrap a database, apply all four hardening migrations afterward. Do not treat the legacy bootstrap script as the final RLS state.
 
-4) Verify app linkage
+5) Verify app linkage
    - Confirm SUPABASE_URL and keys are reachable from your dev host.
-   - Run: npm install && npm run build && npm run dev
+   - Run: npm ci && npm run build && npm run dev
    - Open the app and test the following flows:
      * Role Switcher: Toggle between Host and Resident in Navbar / Profile.
      * Host role: "Register a Building" is visible and creates buildings successfully.
@@ -37,12 +58,12 @@ these steps (or ask a DBA/dev to run the SQL in supabase/sql_apply_for_editor.sq
      * Host view: hosts only see messages targeted to them or broadcasts
      * Host removal: primary host can remove secondary hosts (status -> 'removed')
 
-5) If you prefer a safe staged rollout
+6) If you prefer a safe staged rollout
    - Apply the SQL in a staging Supabase project first.
    - Test search and chat UX thoroughly, especially RLS behaviors.
 
-6) Need help running the SQL or applying the env?
-   - Provide a Supabase service-role key (temporary) and I can run the migration and validate for you, or run the SQL yourself using the file supabase/sql_apply_role_authorization.sql
+7) Need help running the SQL or applying the env?
+   - Never share a Supabase secret/service-role key. Run migrations yourself in the Supabase SQL Editor or through the Supabase CLI.
 
 
 Notes

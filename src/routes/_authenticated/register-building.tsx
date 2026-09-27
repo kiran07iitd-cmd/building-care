@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { uploadBuildingPhoto } from "@/lib/building-photo";
+import { getImageFileError } from "@/lib/image-file";
 import { useAuth } from "@/hooks/use-auth";
 import { useServerFn } from "@tanstack/react-start";
 import { registerNewBuilding } from "@/lib/building-management.functions";
@@ -39,12 +40,8 @@ function RegisterBuilding() {
   const onPhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    if (!f.type.match(/^image\/(jpeg|jpg|png|webp)$/i)) {
-      return toast.error("Only JPG, PNG or WEBP images allowed");
-    }
-    if (f.size > 5 * 1024 * 1024) {
-      return toast.error("Image too large (max 5MB)");
-    }
+    const validationError = getImageFileError(f);
+    if (validationError) return toast.error(validationError);
     setPhoto(f);
     setPhotoPreview(URL.createObjectURL(f));
   };
@@ -69,7 +66,6 @@ function RegisterBuilding() {
           name: name.trim(),
           location: location.trim(),
           hostCount: parseInt(hostCount, 10),
-          activeRole,
         },
       });
 
@@ -92,9 +88,14 @@ function RegisterBuilding() {
 
       toast.success(`Building created! Share code ${code} with residents.`);
       navigate({ to: "/building/$id", params: { id: buildingId } });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Register building error:", err);
-      const errMsg = err?.message || err?.error || "Could not create building";
+      const errMsg =
+        err instanceof Error
+          ? err.message
+          : typeof err === "object" && err !== null && "error" in err && typeof err.error === "string"
+            ? err.error
+            : "Could not create building";
       if (errMsg.includes("403") || errMsg.toLowerCase().includes("forbidden")) {
         toast.error("403 Forbidden: Only active hosts can register buildings");
       } else {
@@ -208,7 +209,7 @@ function RegisterBuilding() {
               ) : (
                 <label className="mt-2 flex h-32 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground hover:bg-accent/30">
                   <ImagePlus className="mb-1 h-5 w-5" />
-                  Click to upload (JPG/PNG/WEBP, max 5MB)
+                  Click to upload (JPG/PNG/WEBP, max 4 MB)
                   <input
                     type="file"
                     className="hidden"

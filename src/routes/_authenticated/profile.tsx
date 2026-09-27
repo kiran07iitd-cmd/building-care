@@ -43,7 +43,7 @@ type Profile = {
 type MyBuilding = { id: string; name: string; location: string; role: string };
 
 function ProfilePage() {
-  const { signOut, user, activeRole } = useAuth();
+  const { signOut, activeRole } = useAuth();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [editing, setEditing] = useState(false);
@@ -68,7 +68,7 @@ function ProfilePage() {
 
     setDeleting(true);
     try {
-      const { error } = await (supabase as any).rpc("delete_building", {
+      const { error } = await supabase.rpc("delete_building", {
         building_id_to_delete: selectedBuildingId,
       });
 
@@ -88,7 +88,7 @@ function ProfilePage() {
       toast.success(`Building "${selectedBuildingName}" deleted successfully`);
       setIsDeleteModalOpen(false);
       load();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       toast.error("An unexpected error occurred");
     } finally {

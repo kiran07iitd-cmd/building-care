@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { supabaseAdmin } from "./building-management-admin.server";
-import { generateBuildingCode } from "./building-code";
+import { generateBuildingCode, normalizeBuildingCode } from "./building-code";
 
 const uuidSchema = z.string().uuid();
 const buildingInput = z.object({ buildingId: uuidSchema });
@@ -157,6 +157,317 @@ async function evaluateHostRequest(requestId: string) {
     .eq("id", request.id);
   if (error) throw new Error(error.message);
 }
+
+const accessCodeSchema = z
+  .string()
+  .trim()
+  .regex(/^B-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/i);
+
+export const getBuildingPreview = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(z.object({ buildingId: uuidSchema, accessCode: accessCodeSchema.optional() }))
+  .handler(async ({ data, context }) => {
+    const [
+      { data: building, error: buildingError },
+      { data: host, error: hostError },
+      { data: assignments, error: assignmentsError },
+    ] = await Promise.all([
+      supabaseAdmin
+        .from("buildings")
+        .select("id,name,location,unique_code,host_count,photo_url,created_by")
+        .eq("id", data.buildingId)
+        .maybeSingle(),
+      supabaseAdmin
+        .from("hosts")
+        .select("is_primary")
+        .eq("building_id", data.buildingId)
+        .eq("user_id", context.userId)
+        .eq("status", "active")
+        .maybeSingle(),
+      supabaseAdmin.from("room_users").select("room_id").eq("user_id", context.userId).eq("status", "active"),
+    ]);
+    if (buildingError) throw new Error(buildingError.message);
+    if (hostError) throw new Error(hostError.message);
+    if (assignmentsError) throw new Error(assignmentsError.message);
+    if (!building) throw new Error("Building not found or code invalid");
+
+    let isResident = false;
+    const assignedRoomIds = (assignments || []).map((assignment) => assignment.room_id);
+    if (assignedRoomIds.length) {
+      const { data: residentRoom, error: residentRoomError } = await supabaseAdmin
+        .from("rooms")
+        .select("id")
+        .eq("building_id", data.buildingId)
+        .in("id", assignedRoomIds)
+        .limit(1)
+        .maybeSingle();
+      if (residentRoomError) throw new Error(residentRoomError.message);
+      isResident = Boolean(residentRoom);
+    }
+
+    const isMember = Boolean(host || isResident || building.created_by === context.userId);
+    if (!isMember) {
+      const { data: attempts, error: rateLimitError } = await supabaseAdmin.rpc(
+        "consume_building_code_lookup",
+        { _user_id: context.userId },
+      );
+      if (rateLimitError) throw new Error(rateLimitError.message);
+      if (attempts > 20) throw new Error("Too many building-code lookups; try again later");
+      if (!data.accessCode || normalizeBuildingCode(data.accessCode) !== building.unique_code) {
+        throw new Error("Building not found or code invalid");
+      }
+    }
+
+    let rooms: { id: string; room_number: string; is_active: boolean }[] = [];
+    if (isMember) {
+      const { data: memberRooms, error: memberRoomsError } = await supabaseAdmin
+        .from("rooms")
+        .select("id,room_number,is_active")
+        .eq("building_id", data.buildingId)
+        .order("room_number");
+      if (memberRoomsError) throw new Error(memberRoomsError.message);
+      rooms = memberRooms || [];
+    }
+
+    return {
+      building: {
+        id: building.id,
+        name: building.name,
+        location: building.location,
+        unique_code: building.unique_code,
+        host_count: building.host_count,
+        photo_url: building.photo_url,
+      },
+      rooms,
+      isHost: Boolean(host),
+      isPrimaryHost: Boolean(host?.is_primary),
+      isMember,
+    };
+  });
+
+export const submitRoomJoinRequest = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    z.object({
+      buildingId: uuidSchema,
+      accessCode: accessCodeSchema,
+      roomNumber: z.string().trim().min(1).max(30),
+      applicantName: z.string().trim().min(1).max(100),
+      applicantMobile: z.string().trim().min(5).max(20),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const { data: attempts, error: rateLimitError } = await supabaseAdmin.rpc(
+      "consume_building_code_lookup",
+      { _user_id: context.userId },
+    );
+    if (rateLimitError) throw new Error(rateLimitError.message);
+    if (attempts > 20) throw new Error("Too many building-code lookups; try again later");
+
+    const { data: building, error: buildingError } = await supabaseAdmin
+      .from("buildings")
+      .select("id,name,unique_code")
+      .eq("id", data.buildingId)
+      .maybeSingle();
+    if (buildingError) throw new Error(buildingError.message);
+    if (!building || normalizeBuildingCode(data.accessCode) !== building.unique_code) {
+      throw new Error("A valid building code is required to request access");
+    }
+
+    const { data: authUser, error: authUserError } = await supabaseAdmin.auth.admin.getUserById(
+      context.userId,
+    );
+    if (authUserError) throw new Error(authUserError.message);
+
+    const { error: requestError } = await supabaseAdmin.from("room_join_requests").insert({
+      building_id: data.buildingId,
+      requested_by: context.userId,
+      room_number: data.roomNumber,
+      applicant_name: data.applicantName,
+      applicant_email: authUser.user.email ?? "",
+      applicant_mobile: data.applicantMobile,
+      status: "pending",
+    });
+    if (requestError) throw new Error(requestError.message);
+
+    const { data: hosts, error: hostsError } = await supabaseAdmin
+      .from("hosts")
+      .select("user_id")
+      .eq("building_id", data.buildingId)
+      .eq("status", "active");
+    if (hostsError) throw new Error(hostsError.message);
+
+    if (hosts?.length) {
+      const { error: notificationError } = await supabaseAdmin.from("notifications").insert(
+        hosts.map((host) => ({
+          building_id: data.buildingId,
+          receiver_id: host.user_id,
+          type: "host_request",
+          title: "New room join request",
+          message: `${data.applicantName} (${authUser.user.email ?? ""}, ${data.applicantMobile}) wants to join Room ${data.roomNumber}.`,
+        })),
+      );
+      if (notificationError) console.error(notificationError.message);
+    }
+
+    return { ok: true };
+  });
+
+export const cancelRoomJoinRequest = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(z.object({ buildingId: uuidSchema, requestId: uuidSchema }))
+  .handler(async ({ data, context }) => {
+    const { data: deleted, error } = await supabaseAdmin
+      .from("room_join_requests")
+      .delete()
+      .eq("id", data.requestId)
+      .eq("building_id", data.buildingId)
+      .eq("requested_by", context.userId)
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!deleted) throw new Error("This pending request cannot be cancelled");
+    return { ok: true };
+  });
+
+export const decideRoomJoinRequest = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    z.object({
+      buildingId: uuidSchema,
+      requestId: uuidSchema,
+      decision: z.enum(["approved", "rejected"]),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const host = await requireActiveHost(data.buildingId, context.userId);
+    const { data: request, error: requestError } = await supabaseAdmin
+      .from("room_join_requests")
+      .select("id,requested_by,room_number,applicant_name,status")
+      .eq("id", data.requestId)
+      .eq("building_id", data.buildingId)
+      .eq("status", "pending")
+      .maybeSingle();
+    if (requestError) throw new Error(requestError.message);
+    if (!request) throw new Error("This join request is no longer pending");
+
+    let room: { id: string; room_number: string; is_active: boolean } | null = null;
+    if (data.decision === "approved") {
+      const { data: rooms, error: roomsError } = await supabaseAdmin
+        .from("rooms")
+        .select("id,room_number,is_active")
+        .eq("building_id", data.buildingId);
+      if (roomsError) throw new Error(roomsError.message);
+
+      const roomList = rooms || [];
+      const roomIds = roomList.map((item) => item.id);
+      if (roomIds.length) {
+        const { data: assignment, error: assignmentError } = await supabaseAdmin
+          .from("room_users")
+          .select("room_id")
+          .eq("user_id", request.requested_by)
+          .eq("status", "active")
+          .in("room_id", roomIds)
+          .limit(1)
+          .maybeSingle();
+        if (assignmentError) throw new Error(assignmentError.message);
+        if (assignment) throw new Error("This user already has an active room in this building");
+      }
+
+      room =
+        roomList.find(
+          (item) => item.room_number.trim().toLowerCase() === request.room_number.trim().toLowerCase(),
+        ) ?? null;
+      if (!room) {
+        const { data: createdRoom, error: createRoomError } = await supabaseAdmin
+          .from("rooms")
+          .insert({
+            building_id: data.buildingId,
+            room_number: request.room_number.trim(),
+            is_active: true,
+          })
+          .select("id,room_number,is_active")
+          .single();
+        if (createRoomError) throw new Error(createRoomError.message);
+        room = createdRoom;
+      } else if (!room.is_active) {
+        const { error: activateError } = await supabaseAdmin
+          .from("rooms")
+          .update({ is_active: true })
+          .eq("id", room.id)
+          .eq("building_id", data.buildingId);
+        if (activateError) throw new Error(activateError.message);
+      }
+
+      const { error: assignmentError } = await supabaseAdmin.from("room_users").insert({
+        room_id: room.id,
+        user_id: request.requested_by,
+        assigned_by: host.id,
+        status: "active",
+      });
+      if (assignmentError) throw new Error(assignmentError.message);
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from("room_join_requests")
+      .update({ status: data.decision, decided_by: context.userId, decided_at: new Date().toISOString() })
+      .eq("id", request.id)
+      .eq("building_id", data.buildingId)
+      .eq("status", "pending");
+    if (updateError) throw new Error(updateError.message);
+
+    const { error: notificationError } = await supabaseAdmin.from("notifications").insert({
+      building_id: data.buildingId,
+      receiver_id: request.requested_by,
+      type: data.decision === "approved" ? "payment_verified" : "payment_rejected",
+      title: data.decision === "approved" ? "Join request approved" : "Join request rejected",
+      message:
+        data.decision === "approved"
+          ? `You've been added to Room ${room?.room_number}.`
+          : `Your request to join Room ${request.room_number} was rejected.`,
+      related_room_id: data.decision === "approved" ? room?.id : null,
+    });
+    if (notificationError) console.error(notificationError.message);
+
+    return { ok: true };
+  });
+
+export const removeResidentFromRoom = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(z.object({ buildingId: uuidSchema, roomUserId: uuidSchema }))
+  .handler(async ({ data, context }) => {
+    await requireActiveHost(data.buildingId, context.userId);
+
+    const { data: membership, error: membershipError } = await supabaseAdmin
+      .from("room_users")
+      .select("id,user_id,room_id,status")
+      .eq("id", data.roomUserId)
+      .eq("status", "active")
+      .maybeSingle();
+    if (membershipError) throw new Error(membershipError.message);
+    if (!membership) throw new Error("This resident is no longer active in a room");
+    await requireRoomInBuilding(membership.room_id, data.buildingId);
+
+    const { error: updateError } = await supabaseAdmin
+      .from("room_users")
+      .update({ status: "removed" })
+      .eq("id", membership.id)
+      .eq("status", "active");
+    if (updateError) throw new Error(updateError.message);
+
+    const { error: notificationError } = await supabaseAdmin.from("notifications").insert({
+      building_id: data.buildingId,
+      receiver_id: membership.user_id,
+      type: "payment_rejected",
+      title: "Removed from building",
+      message: "You have been removed from your room in this building.",
+      related_room_id: membership.room_id,
+    });
+    if (notificationError) console.error(notificationError.message);
+
+    return { ok: true };
+  });
 
 export const getManageRoomsData = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -1045,7 +1356,7 @@ export const decidePaymentVerification = createServerFn({ method: "POST" })
       ? {
           payment_status: "paid",
           verified_at: new Date().toISOString(),
-          verified_by: host.id,
+          verified_by: host.user_id,
         }
       : { payment_status: "not_paid", payment_requested_at: null, verified_at: null };
     const { error } = await supabaseAdmin
@@ -1306,8 +1617,7 @@ export const promoteResidentToHost = createServerFn({ method: "POST" })
 
 /**
  * Register a new building.
- * Enforces role-based authorization: only users with an active "host" role can register buildings.
- * If user has "resident" role (or not "host"), returns an explicit 403 Forbidden response.
+ * Requires an authenticated user and always assigns the new building to that user.
  */
 export const registerNewBuilding = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -1316,33 +1626,11 @@ export const registerNewBuilding = createServerFn({ method: "POST" })
       name: z.string().trim().min(1).max(100),
       location: z.string().trim().min(1).max(200),
       hostCount: z.number().int().min(1).max(5).default(1),
-      activeRole: z.enum(["host", "resident"]).optional(),
     }),
   )
   .handler(async ({ data, context }) => {
-    // 1. Check active role from context claims, payload, or admin getUser
-    let userRole = data.activeRole || (context.claims as any)?.user_metadata?.role;
-    if (!userRole) {
-      const { data: userRes } = await supabaseAdmin.auth.admin.getUserById(context.userId);
-      userRole = userRes?.user?.user_metadata?.role;
-    }
-
-    // Role Enforcement: Return 403 Forbidden when logged in as resident
-    if (userRole === "resident" || (userRole && userRole !== "host")) {
-      throw new Response(
-        JSON.stringify({
-          error: "Forbidden: Only users with an active Host role are authorized to register buildings",
-          statusCode: 403,
-        }),
-        {
-          status: 403,
-          statusText: "Forbidden",
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
-
-    // 2. Generate unique code and insert building
+    // Host/resident is a user-selectable app mode, not an authorization claim.
+    // The authenticated context supplies created_by for every new building.
     let createdBuilding: { id: string; name: string; unique_code: string } | null = null;
     let lastError: string | null = null;
 

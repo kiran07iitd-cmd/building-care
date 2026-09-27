@@ -33,7 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { buildingPhotoSignedUrl, uploadBuildingPhoto } from "@/lib/building-photo";
-import { notifyAllHosts, createNotifications } from "@/lib/notifications";
+import { getImageFileError } from "@/lib/image-file";
 import { MaintenanceDialog } from "@/components/MaintenanceDialog";
 import { HostsDialog } from "@/components/HostsDialog";
 
@@ -46,12 +46,20 @@ import { BuildingCodeShareCard } from "@/components/BuildingCodeShareCard";
 import { useServerFn } from "@tanstack/react-start";
 import {
   getBillingStats,
+  getBuildingPreview,
   getBuildingResidents,
   promoteResidentToHost,
+  cancelRoomJoinRequest,
+  decideRoomJoinRequest,
+  removeResidentFromRoom,
+  submitRoomJoinRequest,
 } from "@/lib/building-management.functions";
 import { currentMonth } from "@/lib/money";
 
 export const Route = createFileRoute("/_authenticated/building/$id")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    code: typeof search.code === "string" ? search.code : undefined,
+  }),
   head: () => ({ meta: [{ title: "Building — BuildingCare" }] }),
   component: BuildingPage,
 });
@@ -79,6 +87,7 @@ type JoinRequest = {
 
 function BuildingPage() {
   const { id } = useParams({ from: "/_authenticated/building/$id" });
+  const { code } = Route.useSearch();
   const [building, setBuilding] = useState<Building | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [isPrimaryHost, setIsPrimaryHost] = useState(false);
@@ -117,8 +126,13 @@ function BuildingPage() {
   const [showMonthly, setShowMonthly] = useState(false);
   const [billStats, setBillStats] = useState({ pending: 0, verified: 0, unpaid: 0 });
   const fetchBillStats = useServerFn(getBillingStats);
+  const fetchBuildingPreview = useServerFn(getBuildingPreview);
   const fetchResidents = useServerFn(getBuildingResidents);
   const makeHost = useServerFn(promoteResidentToHost);
+  const sendJoinRequest = useServerFn(submitRoomJoinRequest);
+  const cancelJoinRequest = useServerFn(cancelRoomJoinRequest);
+  const decideJoinRequest = useServerFn(decideRoomJoinRequest);
+  const removeResidentRequest = useServerFn(removeResidentFromRoom);
 
   const [joinOpen, setJoinOpen] = useState(false);
   const [joinForm, setJoinForm] = useState({ room_number: "", name: "", email: "", mobile: "" });
@@ -140,40 +154,28 @@ function BuildingPage() {
     const uid = userData.user?.id ?? null;
     setUserId(uid);
 
-    const [{ data: b, error: be }, { data: hosts }, { data: rs }] = await Promise.all([
-      supabase.from("buildings").select("*").eq("id", id).maybeSingle(),
-      supabase.from("hosts").select("user_id,status,is_primary").eq("building_id", id),
-      supabase
-        .from("rooms")
-        .select("id,room_number,is_active")
-        .eq("building_id", id)
-        .order("room_number"),
-    ]);
-
-    if (be) toast.error(be.message);
-    setBuilding(b as Building | null);
-    setPhoto(await buildingPhotoSignedUrl((b as Building | null)?.photo_url));
-    const myHost = hosts?.find((h) => h.user_id === uid && h.status === "active");
-    const host = !!myHost;
-    setIsHost(host);
-    setIsPrimaryHost(!!myHost?.is_primary);
-    setRooms((rs as Room[]) || []);
-
-    // Membership check
-    if (uid && rs && rs.length) {
-      const { data: myRoom } = await supabase
-        .from("room_users")
-        .select("id,room_id")
-        .eq("user_id", uid)
-        .eq("status", "active")
-        .in(
-          "room_id",
-          (rs as Room[]).map((r) => r.id),
-        );
-      setIsMember(!!myRoom?.length);
-    } else {
+    let preview;
+    try {
+      preview = await fetchBuildingPreview({ data: { buildingId: id, accessCode: code } });
+    } catch (error) {
+      setBuilding(null);
+      setPhoto(null);
+      setRooms([]);
+      setIsHost(false);
+      setIsPrimaryHost(false);
       setIsMember(false);
+      setLoading(false);
+      toast.error(error instanceof Error ? error.message : "Could not load this building");
+      return;
     }
+
+    const host = preview.isHost;
+    setBuilding(preview.building as Building);
+    setPhoto(await buildingPhotoSignedUrl(preview.building.photo_url));
+    setIsHost(host);
+    setIsPrimaryHost(preview.isPrimaryHost);
+    setIsMember(preview.isMember);
+    setRooms(preview.rooms as Room[]);
 
     // Join requests
     if (host) {
@@ -234,28 +236,22 @@ function BuildingPage() {
   const submitJoinRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!userId) return;
+    if (!code) return toast.error("Open this building using its valid building code");
     const room_number = joinForm.room_number.trim();
     if (!room_number) return toast.error("Room number is required");
-    if (!joinForm.name.trim() || !joinForm.email.trim() || !joinForm.mobile.trim())
-      return toast.error("Name, email and mobile are required");
+    if (!joinForm.name.trim() || !joinForm.mobile.trim())
+      return toast.error("Name and mobile are required");
     setJoinBusy(true);
     try {
-      const { error } = await supabase.from("room_join_requests").insert({
-        building_id: id,
-        requested_by: userId,
-        room_number,
-        applicant_name: joinForm.name.trim(),
-        applicant_email: joinForm.email.trim(),
-        applicant_mobile: joinForm.mobile.trim(),
+      await sendJoinRequest({
+        data: {
+          buildingId: id,
+          accessCode: code,
+          roomNumber: room_number,
+          applicantName: joinForm.name.trim(),
+          applicantMobile: joinForm.mobile.trim(),
+        },
       });
-      if (error) throw error;
-
-      await notifyAllHosts(id, {
-        type: "host_request",
-        title: "New room join request",
-        message: `${joinForm.name.trim()} (${joinForm.mobile.trim()}, ${joinForm.email.trim()}) wants to join Room ${room_number}.`,
-      });
-
       toast.success("Request sent to hosts");
       setJoinOpen(false);
       load();
@@ -273,62 +269,22 @@ function BuildingPage() {
 
   const cancelMyRequest = async () => {
     if (!myRequest) return;
-    const { error } = await supabase.from("room_join_requests").delete().eq("id", myRequest.id);
-    if (error) return toast.error(error.message);
-    toast.success("Request cancelled");
-    load();
+    try {
+      await cancelJoinRequest({ data: { buildingId: id, requestId: myRequest.id } });
+      toast.success("Request cancelled");
+      load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not cancel request");
+    }
   };
 
   const approveRequest = async (req: JoinRequest) => {
     if (!userId) return;
     setDecidingId(req.id);
     try {
-      // Find or create the room
-      let room = rooms.find((r) => r.room_number.trim() === req.room_number.trim());
-      if (!room) {
-        const { data: newRm, error: rErr } = await supabase
-          .from("rooms")
-          .insert({ building_id: id, room_number: req.room_number.trim(), is_active: true })
-          .select("id,room_number,is_active")
-          .single();
-        if (rErr) throw rErr;
-        room = newRm as Room;
-      } else if (!room.is_active) {
-        await supabase.from("rooms").update({ is_active: true }).eq("id", room.id);
-      }
-
-      // Insert active member (unique index enforces one active per room)
-      const { error: ruErr } = await supabase.from("room_users").insert({
-        room_id: room.id,
-        user_id: req.requested_by,
-        assigned_by: userId,
-        status: "active",
+      await decideJoinRequest({
+        data: { buildingId: id, requestId: req.id, decision: "approved" },
       });
-      if (ruErr) {
-        if (ruErr.message.toLowerCase().includes("duplicate") || ruErr.code === "23505") {
-          throw new Error(
-            `Room ${req.room_number} already has an active member. Ask them to pick a different room.`,
-          );
-        }
-        throw ruErr;
-      }
-
-      const { error: uErr } = await supabase
-        .from("room_join_requests")
-        .update({ status: "approved", decided_by: userId, decided_at: new Date().toISOString() })
-        .eq("id", req.id);
-      if (uErr) throw uErr;
-
-      await createNotifications([
-        {
-          building_id: id,
-          receiver_id: req.requested_by,
-          type: "payment_verified",
-          title: "Join request approved",
-          message: `You've been added to Room ${req.room_number}.`,
-          related_room_id: room.id,
-        },
-      ]);
       toast.success(`Approved — ${req.applicant_name} added to Room ${req.room_number}`);
       load();
     } catch (err: unknown) {
@@ -342,20 +298,9 @@ function BuildingPage() {
     if (!userId) return;
     setDecidingId(req.id);
     try {
-      const { error } = await supabase
-        .from("room_join_requests")
-        .update({ status: "rejected", decided_by: userId, decided_at: new Date().toISOString() })
-        .eq("id", req.id);
-      if (error) throw error;
-      await createNotifications([
-        {
-          building_id: id,
-          receiver_id: req.requested_by,
-          type: "payment_rejected",
-          title: "Join request rejected",
-          message: `Your request to join Room ${req.room_number} was rejected.`,
-        },
-      ]);
+      await decideJoinRequest({
+        data: { buildingId: id, requestId: req.id, decision: "rejected" },
+      });
       toast.success("Request rejected");
       load();
     } catch (err: unknown) {
@@ -400,21 +345,7 @@ function BuildingPage() {
       return;
     setRemovingResidentId(r.ru_id);
     try {
-      const { error } = await supabase
-        .from("room_users")
-        .update({ status: "removed" })
-        .eq("id", r.ru_id);
-      if (error) throw error;
-      await createNotifications([
-        {
-          building_id: id,
-          receiver_id: r.user_id,
-          type: "payment_rejected",
-          title: "Removed from building",
-          message: `You've been removed from Room ${r.room_number}.`,
-          related_room_id: r.room_id,
-        },
-      ]);
+      await removeResidentRequest({ data: { buildingId: id, roomUserId: r.ru_id } });
       toast.success(`Removed ${r.name || "resident"} from Room ${r.room_number}`);
       load();
     } catch (err: unknown) {
@@ -504,9 +435,8 @@ function BuildingPage() {
   const onEditPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    if (!f.type.match(/^image\/(jpeg|jpg|png|webp)$/i))
-      return toast.error("Only JPG, PNG or WEBP images allowed");
-    if (f.size > 5 * 1024 * 1024) return toast.error("Image too large (max 5MB)");
+    const validationError = getImageFileError(f);
+    if (validationError) return toast.error(validationError);
     setEditPhoto(f);
     setEditPreview(URL.createObjectURL(f));
     setRemovePhoto(false);
@@ -624,7 +554,11 @@ function BuildingPage() {
 
       {isHost && (
         <>
-          <BuildingCodeShareCard buildingCode={building.unique_code} className="mb-6" />
+          <BuildingCodeShareCard
+            buildingId={building.id}
+            buildingCode={building.unique_code}
+            className="mb-6"
+          />
           <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Card className="p-4">
               <p className="text-xs text-muted-foreground">Active Rooms</p>
@@ -1045,7 +979,7 @@ function BuildingPage() {
               ) : (
                 <label className="mt-2 flex h-32 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground hover:bg-accent/30">
                   <Camera className="mb-1 h-5 w-5" />
-                  Click to upload (JPG/PNG/WEBP, max 5MB)
+                  Click to upload (JPG/PNG/WEBP, max 4 MB)
                   <input
                     type="file"
                     className="hidden"

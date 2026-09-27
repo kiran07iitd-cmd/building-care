@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { inr, categoryIcon } from "@/lib/money";
+import { getImageFileError } from "@/lib/image-file";
 import {
   getMaintenanceData,
   saveMaintenanceCategory,
@@ -68,6 +69,17 @@ export function MaintenanceDialog({
   const [qrFile, setQrFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const onQrFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    const validationError = file ? getImageFileError(file) : null;
+    if (validationError) {
+      event.target.value = "";
+      toast.error(validationError);
+      return;
+    }
+    setQrFile(file);
+  };
+
   const load = async () => {
     setLoading(true);
     try {
@@ -113,6 +125,10 @@ export function MaintenanceDialog({
     if (!form.name.trim()) return toast.error("Maintenance name required");
     if (isNaN(total) || total < 0) return toast.error("Valid total amount required");
     if (isNaN(penalty) || penalty < 0) return toast.error("Valid penalty amount required");
+    if (qrFile) {
+      const validationError = getImageFileError(qrFile);
+      if (validationError) return toast.error(validationError);
+    }
 
     setSaving(true);
     let qrPath = editing?.qr_code_image ?? null;
@@ -336,11 +352,11 @@ export function MaintenanceDialog({
                 />
               </div>
               <div>
-                <Label>QR code image (optional)</Label>
+                  <Label>QR code image (optional, max 4 MB)</Label>
                 <Input
                   type="file"
-                  accept="image/*"
-                  onChange={(e) => setQrFile(e.target.files?.[0] || null)}
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={onQrFileSelect}
                 />
               </div>
               <DialogFooter>

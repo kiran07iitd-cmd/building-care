@@ -24,6 +24,7 @@ import {
   toggleMaintenanceCategory,
 } from "@/lib/building-management.functions";
 import { useRequireHost } from "@/hooks/use-require-host";
+import { getImageFileError } from "@/lib/image-file";
 
 export const Route = createFileRoute("/_authenticated/building/$id_/maintenance")({
   head: () => ({ meta: [{ title: "Maintenance — BuildingCare" }] }),
@@ -72,6 +73,17 @@ function MaintenancePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [penaltyBusy, setPenaltyBusy] = useState(false);
 
+  const onQrFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    const validationError = file ? getImageFileError(file) : null;
+    if (validationError) {
+      event.target.value = "";
+      toast.error(validationError);
+      return;
+    }
+    setQrFile(file);
+  };
+
   const load = async () => {
     setLoading(true);
     try {
@@ -119,6 +131,10 @@ function MaintenancePage() {
     if (!form.name.trim()) return toast.error("Category name required");
     if (isNaN(total) || total < 0) return toast.error("Valid total amount required");
     if (isNaN(penalty) || penalty < 0) return toast.error("Valid penalty amount required");
+    if (qrFile) {
+      const validationError = getImageFileError(qrFile);
+      if (validationError) return toast.error(validationError);
+    }
 
     setSaving(true);
     let qrPath = editing?.qr_code_image ?? null;
@@ -354,11 +370,11 @@ function MaintenancePage() {
               />
             </div>
             <div>
-              <Label>QR code image (optional)</Label>
+              <Label>QR code image (optional, max 4 MB)</Label>
               <Input
                 type="file"
-                accept="image/*"
-                onChange={(e) => setQrFile(e.target.files?.[0] || null)}
+                accept="image/jpeg,image/png,image/webp"
+                onChange={onQrFileSelect}
               />
             </div>
             <DialogFooter>

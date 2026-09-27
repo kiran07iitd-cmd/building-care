@@ -589,10 +589,28 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      consume_building_code_lookup: {
+        Args: { _user_id: string }
+        Returns: number
+      }
       is_host_of: { Args: { _building_id: string }; Returns: boolean }
+      lookup_building_by_code: {
+        Args: { search_code: string }
+        Returns: {
+          id: string
+          location: string
+          name: string
+          photo_url: string | null
+          unique_code: string
+        }[]
+      }
       is_resident_of: { Args: { _building_id: string }; Returns: boolean }
       recalc_per_room_amounts: {
         Args: { _building_id: string }
+        Returns: undefined
+      }
+      delete_building: {
+        Args: { building_id_to_delete: string }
         Returns: undefined
       }
     }

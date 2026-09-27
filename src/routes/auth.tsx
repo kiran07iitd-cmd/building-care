@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Building2, Crown, Home, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -10,13 +10,33 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 
+function getSafePostAuthPath(): string {
+  const requestedPath =
+    window.sessionStorage.getItem("post_auth_path") ??
+    new URLSearchParams(window.location.search).get("redirect");
+  if (!requestedPath || !requestedPath.startsWith("/") || requestedPath.startsWith("//")) {
+    return "/dashboard";
+  }
+
+  const target = new URL(requestedPath, window.location.origin);
+  if (target.origin !== window.location.origin || target.pathname === "/auth") {
+    return "/dashboard";
+  }
+  return `${target.pathname}${target.search}${target.hash}`;
+}
+
+function completeAuthRedirect() {
+  const targetPath = getSafePostAuthPath();
+  window.sessionStorage.removeItem("post_auth_path");
+  window.location.replace(targetPath);
+}
+
 export const Route = createFileRoute("/auth")({
   head: () => ({ meta: [{ title: "Sign in — BuildingCare" }] }),
   component: AuthPage,
 });
 
 function AuthPage() {
-  const navigate = useNavigate();
   const { user, loading } = useAuth();
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState("");
@@ -79,7 +99,7 @@ function AuthPage() {
     await syncUserRole(role);
     setBusy(false);
     toast.success(`Signed in as ${role === "host" ? "Host" : "Living Person"}!`);
-    navigate({ to: "/dashboard" });
+    completeAuthRedirect();
   };
 
   const calcAge = (isoDate: string) => {
@@ -112,18 +132,18 @@ function AuthPage() {
             setBusy(false);
           }
         }
-        navigate({ to: "/dashboard" });
+        completeAuthRedirect();
       }
     };
     checkOAuthRole();
-  }, [user, loading, navigate]);
+  }, [user, loading]);
 
   const handleGoogle = async () => {
     setBusy(true);
     try {
       localStorage.setItem("oauth_role", role);
       localStorage.setItem("active_role", role);
-      const redirectToUrl = `${window.location.origin}/auth`;
+      const redirectToUrl = `${window.location.origin}/auth?redirect=${encodeURIComponent(getSafePostAuthPath())}`;
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -134,8 +154,8 @@ function AuthPage() {
         toast.error(error.message || "Google sign-in failed");
         setBusy(false);
       }
-    } catch (e: any) {
-      toast.error(e?.message || "Google sign-in failed");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Google sign-in failed");
       setBusy(false);
     }
   };
@@ -151,7 +171,7 @@ function AuthPage() {
     await syncUserRole(role);
     setBusy(false);
     toast.success(`Welcome back! Logged in as ${role === "host" ? "Host" : "Living Person"}.`);
-    navigate({ to: "/dashboard" });
+    completeAuthRedirect();
   };
 
   const handleForgot = async () => {
@@ -173,18 +193,22 @@ function AuthPage() {
     if (age < 18) return toast.error("You must be at least 18 years old to register");
     setBusy(true);
     localStorage.setItem("active_role", role);
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: `${window.location.origin}/dashboard`,
+        emailRedirectTo: `${window.location.origin}/auth?redirect=${encodeURIComponent(getSafePostAuthPath())}`,
         data: { name, mobile, role, date_of_birth: dob },
       },
     });
     setBusy(false);
     if (error) return toast.error(error.message);
-    toast.success(`Account created as ${role === "host" ? "Host" : "Living Person"}!`);
-    navigate({ to: "/dashboard" });
+    if (data.session) {
+      toast.success(`Account created as ${role === "host" ? "Host" : "Living Person"}!`);
+      completeAuthRedirect();
+      return;
+    }
+    toast.success("Account created. Check your email to confirm it, then sign in.");
   };
 
   return (
@@ -198,7 +222,7 @@ function AuthPage() {
           <CardHeader className="space-y-1">
             <CardTitle className="text-xl">Sign in to BuildingCare</CardTitle>
             <CardDescription>
-              Choose your login mode to determine your active session privileges
+              Choose a view. Access to each building is controlled by its membership.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -237,8 +261,8 @@ function AuthPage() {
               </div>
               <p className="mt-2 text-[11px] text-muted-foreground text-center">
                 {role === "host"
-                  ? "👑 Host mode allows registering new buildings and building management."
-                  : "🏠 Living Person mode restricts building registration to resident view."}
+                  ? "Host mode shows building registration and management controls."
+                  : "Living Person mode shows resident and building-join controls."}
               </p>
             </div>
 

@@ -371,7 +371,10 @@ function ManageRoomsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={!!busy}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={(e) => { e.preventDefault(); confirmToggle && doToggle(confirmToggle); }}
+              onClick={(e) => {
+                e.preventDefault();
+                if (confirmToggle) void doToggle(confirmToggle);
+              }}
               disabled={!!busy}
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : confirmToggle?.is_active ? "Deactivate" : "Activate"}
@@ -393,7 +396,10 @@ function ManageRoomsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={!!busy}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={(e) => { e.preventDefault(); confirmRemove && doRemoveUser(confirmRemove); }}
+              onClick={(e) => {
+                e.preventDefault();
+                if (confirmRemove) void doRemoveUser(confirmRemove);
+              }}
               disabled={!!busy}
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Remove User"}
